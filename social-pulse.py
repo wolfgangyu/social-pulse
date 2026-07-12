@@ -41,7 +41,8 @@ REDDIT_AI_LIMIT = 8
 
 # ── Filters ──────────────────────────────────────────────────────────────────
 # PTT boards to exclude (gossiping/moviemade/music are entertainment, not intel)
-PTT_EXCLUDE_BOARDS = {"gossiping", "movie_made", "music", "job", "love", "gay", "baseball", "basketball", "Joke", "M-Market"}
+# SportLottery = sports betting, not useful for intelligence gathering
+PTT_EXCLUDE_BOARDS = {"gossiping", "movie_made", "music", "job", "love", "gay", "baseball", "basketball", "Joke", "M-Market", "sportlottery"}
 
 # Title patterns indicating noise (bot/mod posts, UI elements)
 NOISE_TITLE_PATTERNS = [
@@ -54,6 +55,62 @@ NOISE_TITLE_PATTERNS = [
     re.compile(r'^i\.'),                # Reddit image label
     re.compile(r'^www\.'),             # Reddit domain label
 ]
+
+# Patterns to skip live sports broadcasts and similar noise
+LIVE_BROADCAST_PATTERNS = [
+    re.compile(r'\\?\[LIVE\\?\]', re.IGNORECASE),   # PTT LIVE直播 (escaped or not)
+    re.compile(r'LIVE\s+', re.IGNORECASE),           # LIVE at start
+]
+
+# Reddit authors that are not real discussion participants
+NOISE_AUTHORS = {"AutoModerator", "moderator", "Mod_Support", "stickymod"}
+
+# Reddit title patterns that indicate personal classifieds, not discussion/intel
+REDDIT_NOISE_PATTERNS = [
+    re.compile(r'^Looking\s+for\b', re.IGNORECASE),      # 個人徵文/尋找
+    re.compile(r'^Hiring\b', re.IGNORECASE),              # 招聘（不是產業分析）
+    re.compile(r'^Moving\s+to\b', re.IGNORECASE),         # 搬家/移居個人分享
+    re.compile(r'^Dating\s+with\b', re.IGNORECASE),       # 約會徵文
+    re.compile(r'^Check\s+your\b', re.IGNORECASE),        # 個人通知
+    re.compile(r'^Tennis\b', re.IGNORECASE),              # 課程徵文
+    re.compile(r'^Wanted\b', re.IGNORECASE),              # 求購
+    re.compile(r'^For\s+sale\b', re.IGNORECASE),          # 出售
+    re.compile(r'^Need\b', re.IGNORECASE),                # 需求個人
+    re.compile(r'^Help\b', re.IGNORECASE),                # 求助個人
+    re.compile(r'^lash\s+lift\b', re.IGNORECASE),         # 美容廣告
+    re.compile(r'Lessons\s+with\b', re.IGNORECASE),       # 課程廣告
+    re.compile(r'Looking\s+for\s+\d', re.IGNORECASE),     # 徵文/找人（含數字）
+    re.compile(r'^Guys\s+do\s+you\b', re.IGNORECASE),     # 個人提問
+    re.compile(r'^Would\s+any\b', re.IGNORECASE),         # 個人提問
+    re.compile(r'^When\s+is\s+it\b', re.IGNORECASE),      # 個人提問
+    re.compile(r'^What\s+yall\b', re.IGNORECASE),         # 個人提問
+    re.compile(r'^Is\s+there\b', re.IGNORECASE),          # 個人提問
+]
+
+
+def _is_live_broadcast(title: str) -> bool:
+    """Return True if the title looks like a live sports broadcast."""
+    for pat in LIVE_BROADCAST_PATTERNS:
+        if pat.search(title):
+            return True
+    return False
+
+
+def _is_noise_author(author: str) -> bool:
+    """Return True if the author is a known noise bot/mod.
+
+    Handles both plain usernames and markdown links like [AutoModerator](...).
+    """
+    cleaned = re.sub(r'\[', '', author).split(']')[0].strip()
+    return cleaned in NOISE_AUTHORS
+
+
+def _is_reddit_classified(title: str) -> bool:
+    """Return True if the title looks like a personal classified/posting."""
+    for pat in REDDIT_NOISE_PATTERNS:
+        if pat.search(title):
+            return True
+    return False
 
 
 def _is_noise_title(title: str) -> bool:
@@ -147,8 +204,8 @@ def parse_ptt_from_markdown(text: str) -> list[dict]:
                 i += 1
                 continue
 
-            # Skip noise titles (announcements, mod posts)
-            if _is_noise_title(title):
+            # Skip noise titles (announcements, mod posts, live broadcasts)
+            if _is_noise_title(title) or _is_live_broadcast(title):
                 i += 1
                 continue
 
@@ -199,12 +256,18 @@ def parse_reddit_from_markdown(text: str) -> list[dict]:
                     pass
 
             # Skip if title is too short or duplicate
-            if title and len(title) >= 5 and title not in seen:
+            if title and len(title) >= 10 and title not in seen:
                 seen.add(title)
                 # Normalize URL
                 full_url = url if url.startswith("http") else f"https://reddit.com{url}"
                 # Skip non-article URLs (images, galleries, videos)
                 if _is_non_article_url(full_url):
+                    continue
+                # Skip AutoModerator and other noise authors
+                if _is_noise_author(author):
+                    continue
+                # Skip personal classifieds (Looking for, hiring, moving, etc.)
+                if _is_reddit_classified(title):
                     continue
                 meta = f"u/{author} · {time_str}" if author else ""
                 items.append({
@@ -302,7 +365,7 @@ def fetch_web_trending(limit: int = 5) -> list[dict]:
             text = fetch_firecrawl(
                 f"https://www.google.com/search?q={requests.utils.quote(query)}&hl=zh-TW"
             )
-            links = re.findall(r'https?://(?:www\.)?' + re.escape(domain) + r'[^<>\s"]*', text)
+            links = re.findall(r'https?://(?:www\.)?' + re.escape(domain) + r'[^<>\s"&]*', text)
             seen = set()
             for link in links[:3]:
                 if link in seen or 'google.com' in link or 'search?' in link:
