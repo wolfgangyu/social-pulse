@@ -36,6 +36,12 @@ FIRECRAWL_TIMEOUT = 25
 # ── Sources ───────────────────────────────────────────────────────────────────
 PTT_URL = "https://www.pttweb.cc/hot/all/today"
 REDDIT_URL = "https://old.reddit.com/r/taiwan/hot/"
+REDDIT_BUSINESS_SUBREDDITS = [
+    "Entrepreneur",
+    "ecommerce",
+    "marketing",
+    "productivity",
+]
 REDDIT_AI_QUERY = "AI agent Taiwan"
 REDDIT_AI_LIMIT = 8
 
@@ -145,7 +151,7 @@ def _is_noise_title(title: str) -> bool:
 
 
 def _is_non_article_url(url: str) -> bool:
-    """Return True if the URL points to a non-article resource (image, gallery, video)."""
+    """Return True if the URL points to a non-article resource (image, gallery, video, podcast)."""
     lower = url.lower()
     # Image extensions
     for ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.svg', '.webp', '.ico'):
@@ -156,6 +162,9 @@ def _is_non_article_url(url: str) -> bool:
         return True
     # Reddit video embeds
     if lower.endswith('.mp4') or 'v.redd.it' in lower:
+        return True
+    # External services (podcasts, etc.)
+    if 'open.spotify.com' in lower or 'soundcloud.com' in lower:
         return True
     return False
 
@@ -436,6 +445,22 @@ def deduplicate(items: list[dict]) -> list[dict]:
     return result
 
 
+def _render_business_reddit(lines, by_source, label, icon):
+    """Render Reddit business subreddits section."""
+    entries = by_source.get(label, [])
+    if not entries:
+        return
+    lines.append(f"\n{icon} {label}（{len(entries)} 則）")
+    for idx, it in enumerate(entries[:8], 1):
+        title = it["title"]
+        meta = it.get("meta", "").strip()
+        if meta:
+            lines.append(f"  {idx}. {title}")
+            lines.append(f"     {meta}  —  {it['url']}")
+        else:
+            lines.append(f"  {idx}. {title}  —  {it['url']}")
+
+
 def format_discord(items: list[dict], run_at: str) -> str:
     """Format for Discord as a clean summary with source sections."""
     lines = [
@@ -464,6 +489,11 @@ def format_discord(items: list[dict], run_at: str) -> str:
 
     render_source("ptt", "PTT 今日熱門（非八卦版）", "\U0001f4f6")
     render_source("reddit", "Reddit r/taiwan", "\U0001f5c0")
+
+    # Business subreddits
+    for sub in REDDIT_BUSINESS_SUBREDDITS:
+        _render_business_reddit(lines, by_source, sub, "\U0001f4bc")
+
     render_source("reddit_ai", "Reddit AI agent 搜尋", "\U0001f916")
     render_source("web", "Threads / FB 熱搜", "\U0001f310")
 
@@ -506,6 +536,24 @@ def run():
         if not dry:
             print(f"    [!] Reddit failed: {e}")
 
+    # Reddit business subreddits (Entrepreneur, ecommerce, marketing, productivity)
+    for sub in REDDIT_BUSINESS_SUBREDDITS:
+        if not dry:
+            print(f"[*] Fetching r/{sub}...")
+        try:
+            url = f"https://old.reddit.com/r/{sub}/hot/"
+            text = fetch_firecrawl(url)
+            sub_items = parse_reddit_from_markdown(text)
+            # Tag with subreddit name in meta
+            for item in sub_items:
+                item["meta"] = f"r/{sub} · {item['meta']}"
+            if not dry:
+                print(f"    -> {len(sub_items)} r/{sub} items (filtered)")
+            all_items.extend(sub_items)
+        except Exception as e:
+            if not dry:
+                print(f"    [!] r/{sub} failed: {e}")
+
     # Reddit AI agent keyword search
     if not dry:
         print("[*] Searching Reddit for AI agent...")
@@ -543,6 +591,7 @@ def run():
         "sources": {
             "ptt": [i for i in unique if i["source"] == "ptt"],
             "reddit": [i for i in unique if i["source"] == "reddit"],
+            **{sub: [i for i in unique if i["meta"].startswith(f"r/{sub}")] for sub in REDDIT_BUSINESS_SUBREDDITS},
             "reddit_ai": [i for i in unique if i["source"] == "reddit_ai"],
             "web": [i for i in unique if i["source"] == "web"],
         },
