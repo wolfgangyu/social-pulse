@@ -2,7 +2,7 @@
 social-pulse.py — 24h 社群情報收集器
 用法：
   python social-pulse.py              # 收集 + 格式化，寫入 social-pulse.json
-  python social-pulse.py --dry         # 顯示內容，不寫檔
+  python social-pulse.py --dry        # 顯示內容，不寫檔
 
 輸出：
   1. social-pulse.json（腳本目錄，供 cron 檢視）
@@ -38,6 +38,51 @@ PTT_URL = "https://www.pttweb.cc/hot/all/today"
 REDDIT_URL = "https://old.reddit.com/r/taiwan/hot/"
 REDDIT_AI_QUERY = "AI agent Taiwan"
 REDDIT_AI_LIMIT = 8
+
+# ── Filters ──────────────────────────────────────────────────────────────────
+# PTT boards to exclude (gossiping/moviemade/music are entertainment, not intel)
+PTT_EXCLUDE_BOARDS = {"gossiping", "movie_made", "music", "job", "love", "gay", "baseball", "basketball", "Joke", "M-Market"}
+
+# Title patterns indicating noise (bot/mod posts, UI elements)
+NOISE_TITLE_PATTERNS = [
+    re.compile(r'^\[公告\]'),           # PTT announcements
+    re.compile(r'^\[問板\]'),           # PTT board questions
+    re.compile(r'AutoModerator'),       # Reddit auto-mod posts
+    re.compile(r'^\d+\s+comments$'),    # Reddit comment count line
+    re.compile(r'^submitted'),          # Reddit submitted line
+    re.compile(r'^self\.'),            # Reddit self post label
+    re.compile(r'^i\.'),                # Reddit image label
+    re.compile(r'^www\.'),             # Reddit domain label
+]
+
+
+def _is_noise_title(title: str) -> bool:
+    """Return True if the title matches noise patterns."""
+    for pat in NOISE_TITLE_PATTERNS:
+        if pat.search(title):
+            return True
+    return False
+
+
+def _is_non_article_url(url: str) -> bool:
+    """Return True if the URL points to a non-article resource (image, gallery, video)."""
+    lower = url.lower()
+    # Image extensions
+    for ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.svg', '.webp', '.ico'):
+        if lower.endswith(ext):
+            return True
+    # Reddit gallery/self posts
+    if '/gallery/' in lower or '/media/' in lower:
+        return True
+    # Reddit video embeds
+    if lower.endswith('.mp4') or 'v.redd.it' in lower:
+        return True
+    return False
+
+
+def _is_excluded_board(board_name: str) -> bool:
+    """Check if board is in the exclusion list."""
+    return board_name.lower() in PTT_EXCLUDE_BOARDS
 
 
 def ptt_time_to_iso(raw: str) -> str:
@@ -97,6 +142,17 @@ def parse_ptt_from_markdown(text: str) -> list[dict]:
                     time_raw = tm.group(1)
                 j += 1
 
+            # Skip excluded boards (gossiping, etc.)
+            if _is_excluded_board(board_name):
+                i += 1
+                continue
+
+            # Skip noise titles (announcements, mod posts)
+            if _is_noise_title(title):
+                i += 1
+                continue
+
+            # Minimum title length + uniqueness
             if board_name and time_raw and title and len(title) >= 6 and title not in seen:
                 seen.add(title)
                 meta = f"{board_name} · {user_name} · {ptt_time_to_iso(time_raw)}"
@@ -119,6 +175,12 @@ def parse_reddit_from_markdown(text: str) -> list[dict]:
             category = m.group(1)
             title = m.group(2).strip()
             url = m.group(3)
+
+            # Skip noise titles (AutoModerator, etc.)
+            if _is_noise_title(title):
+                i += 1
+                continue
+
             author, time_str = '', ''
             for j in range(i + 1, min(i + 5, len(lines))):
                 l = lines[j].strip()
@@ -135,12 +197,19 @@ def parse_reddit_from_markdown(text: str) -> list[dict]:
                     pass
                 elif re.match(r'^\d+\s+comments', l):
                     pass
+
+            # Skip if title is too short or duplicate
             if title and len(title) >= 5 and title not in seen:
                 seen.add(title)
+                # Normalize URL
+                full_url = url if url.startswith("http") else f"https://reddit.com{url}"
+                # Skip non-article URLs (images, galleries, videos)
+                if _is_non_article_url(full_url):
+                    continue
                 meta = f"u/{author} · {time_str}" if author else ""
                 items.append({
                     "title": title,
-                    "url": url if url.startswith("http") else f"https://reddit.com{url}",
+                    "url": full_url,
                     "source": "reddit",
                     "meta": meta
                 })
@@ -164,49 +233,55 @@ def fetch_firecrawl(url: str) -> str:
 
 
 def fetch_reddit_ai_query(query: str, limit: int = 8) -> list[dict]:
-    """Search Reddit JSON API for keyword (e.g. AI agent)."""
+    """Search Reddit JSON API for keyword (e.g. AI agent).
+
+    Uses type=self to capture discussion posts, plus type=link for external links.
+    """
     items = []
     seen = set()
     query_encoded = urllib.parse.quote(query)
-    url = f"https://old.reddit.com/search.json?q={query_encoded}&type=link&sort=new&limit={limit}"
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesBot/2.1; +https://woof.energy/hermes)"}
 
-    try:
-        resp = requests.get(url, headers=headers, timeout=30)
-        if resp.status_code != 200:
-            return items
-        data = resp.json()
-        for child in data.get("data", {}).get("children", [])[:limit]:
-            p = child.get("data")
-            if p.get("domain") in ["self.taiwan", "v.redd.it", "i.redd.it"]:
-                continue
-            link_url = p.get("url")
-            if not link_url:
-                continue
-            url_root = link_url.split("?")[0].split("#")[0]
-            if url_root in seen:
-                continue
-            seen.add(url_root)
+    # Try both self posts and link posts
+    for search_type in ["self", "link"]:
+        url = f"https://old.reddit.com/search.json?q={query_encoded}&type={search_type}&sort=new&limit={limit}"
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesBot/2.1; +https://woof.energy/hermes)"}
 
-            subreddit = p.get("subreddit", "")
-            author = p.get("author", "")
-            created_utc = p.get("created_utc", "")
-            if created_utc:
-                dt = datetime.fromtimestamp(created_utc, tz=timezone.utc)
-                time_str = dt.strftime("%Y-%m-%d %H:%M UTC")
-            else:
-                time_str = ""
+        try:
+            resp = requests.get(url, headers=headers, timeout=30)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            for child in data.get("data", {}).get("children", [])[:limit]:
+                p = child.get("data")
+                if p.get("domain") in ["self.taiwan", "v.redd.it", "i.redd.it"]:
+                    continue
+                link_url = p.get("url")
+                if not link_url:
+                    continue
+                url_root = link_url.split("?")[0].split("#")[0]
+                if url_root in seen:
+                    continue
+                seen.add(url_root)
 
-            meta = f"u/{author} · r/{subreddit} · {time_str}"
-            title = f"[AI agent] {p.get('title', '[Untitled]')}"
-            items.append({
-                "title": title,
-                "url": link_url,
-                "source": "reddit_ai",
-                "meta": meta
-            })
-    except Exception:
-        pass
+                subreddit = p.get("subreddit", "")
+                author = p.get("author", "")
+                created_utc = p.get("created_utc", "")
+                if created_utc:
+                    dt = datetime.fromtimestamp(created_utc, tz=timezone.utc)
+                    time_str = dt.strftime("%Y-%m-%d %H:%M UTC")
+                else:
+                    time_str = ""
+
+                meta = f"u/{author} · r/{subreddit} · {time_str}"
+                title = f"[AI agent] {p.get('title', '[Untitled]')}"
+                items.append({
+                    "title": title,
+                    "url": link_url,
+                    "source": "reddit_ai",
+                    "meta": meta
+                })
+        except Exception:
+            pass
     return items
 
 
@@ -245,15 +320,25 @@ def fetch_web_trending(limit: int = 5) -> list[dict]:
 
 
 def deduplicate(items: list[dict]) -> list[dict]:
-    """Remove near-duplicates by URL root and title similarity."""
+    """Remove near-duplicates by URL and title similarity.
+
+    Uses per-domain URL dedup + title prefix matching. Unlike the previous
+    version that compared URL roots globally (causing over-aggressive dedup),
+    this version respects that the same title from different sources is
+    legitimate coverage.
+    """
     seen_urls = set()
     seen_titles = set()
     result = []
     for item in items:
-        url_root = re.sub(r'https?://(www\.)?', '', item["url"]).split('/')[0]
-        title_short = re.sub(r'[^\w\u4e00-\u9fff]', '', item["title"])[:15]
-        url_key = url_root.lower()
-        title_key = title_short.lower()
+        # URL dedup: normalize the full path (not just domain)
+        url_normalized = re.sub(r'https?://(www\.)?', '', item["url"])
+        url_key = url_normalized.split('?')[0].split('#')[0].lower()
+
+        # Title dedup: strip non-word chars, compare first 15 chars
+        title_clean = re.sub(r'[^\w一-鿿]', '', item["title"])[:15]
+        title_key = title_clean.lower()
+
         if url_key in seen_urls or title_key in seen_titles:
             continue
         seen_urls.add(url_key)
@@ -263,34 +348,38 @@ def deduplicate(items: list[dict]) -> list[dict]:
 
 
 def format_discord(items: list[dict], run_at: str) -> str:
-    """Format for Discord (no markdown table)."""
+    """Format for Discord as a clean summary with source sections."""
     lines = [
         f"\U0001f4e1 社群情報快報   {run_at[:10]}",
-        "\u2500" * 36,
+        "─" * 36,
     ]
 
     by_source = {}
     for item in items:
         by_source.setdefault(item["source"], []).append(item)
 
-    def render_source(name: str, label: str):
+    def render_source(name: str, label: str, icon: str):
         entries = by_source.get(name, [])
         if not entries:
             return
-        lines.append(f"\n【{label}】")
-        for it in entries[:8]:
+        lines.append(f"\n{icon} {label}（{len(entries)} 則）")
+        for idx, it in enumerate(entries[:8], 1):
             title = it["title"]
-            meta = it.get("meta", "")
-            lines.append(f"  \u25b8 {title}")
-            lines.append(f"     {meta}  \u2014  {it['url']}")
+            meta = it.get("meta", "").strip()
+            # Clean up empty meta parts
+            if meta:
+                lines.append(f"  {idx}. {title}")
+                lines.append(f"     {meta}  —  {it['url']}")
+            else:
+                lines.append(f"  {idx}. {title}  —  {it['url']}")
 
-    render_source("ptt", "PTT 今日熱門")
-    render_source("reddit", "Reddit r/taiwan")
-    render_source("reddit_ai", "Reddit AI agent")
-    render_source("web", "Threads / FB 熱搜")
+    render_source("ptt", "PTT 今日熱門（非八卦版）", "\U0001f4f6")
+    render_source("reddit", "Reddit r/taiwan", "\U0001f5c0")
+    render_source("reddit_ai", "Reddit AI agent 搜尋", "\U0001f916")
+    render_source("web", "Threads / FB 熱搜", "\U0001f310")
 
-    lines.append("\n" + "\u2500" * 36)
-    lines.append(f"共 {len(items)} 則情報  \u2022  資料來源：PTT / Reddit / AI agent / 社群搜尋")
+    lines.append("\n" + "─" * 36)
+    lines.append(f"共 {len(items)} 則情報  •  資料來源：PTT / Reddit / AI agent / 社群搜尋")
 
     return "\n".join(lines)
 
@@ -301,7 +390,6 @@ def run():
         print(f"[*] social-pulse.py  ({datetime.now():%Y-%m-%d %H:%M})")
 
     all_items = []
-    uri_seen = set()
 
     # PTT
     if not dry:
@@ -310,7 +398,7 @@ def run():
         text = fetch_firecrawl(PTT_URL)
         ptt_items = parse_ptt_from_markdown(text)
         if not dry:
-            print(f"    -> {len(ptt_items)} PTT items")
+            print(f"    -> {len(ptt_items)} PTT items (filtered)")
         all_items.extend(ptt_items)
     except Exception as e:
         if not dry:
@@ -323,7 +411,7 @@ def run():
         text = fetch_firecrawl(REDDIT_URL)
         reddit_items = parse_reddit_from_markdown(text)
         if not dry:
-            print(f"    -> {len(reddit_items)} Reddit items")
+            print(f"    -> {len(reddit_items)} Reddit items (filtered)")
         all_items.extend(reddit_items)
     except Exception as e:
         if not dry:
