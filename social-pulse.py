@@ -42,7 +42,8 @@ REDDIT_AI_LIMIT = 8
 # ── Filters ──────────────────────────────────────────────────────────────────
 # PTT boards to exclude (gossiping/moviemade/music are entertainment, not intel)
 # SportLottery = sports betting, not useful for intelligence gathering
-PTT_EXCLUDE_BOARDS = {"gossiping", "movie_made", "music", "job", "love", "gay", "baseball", "basketball", "Joke", "M-Market", "sportlottery"}
+# LoL/NBA/Baseball/Basketball = sports/esports entertainment
+PTT_EXCLUDE_BOARDS = {"gossiping", "movie_made", "music", "job", "love", "gay", "baseball", "basketball", "Joke", "M-Market", "sportlottery", "lol", "nba"}
 
 # Title patterns indicating noise (bot/mod posts, UI elements)
 NOISE_TITLE_PATTERNS = [
@@ -70,6 +71,7 @@ REDDIT_NOISE_PATTERNS = [
     re.compile(r'^Looking\s+for\b', re.IGNORECASE),      # 個人徵文/尋找
     re.compile(r'^Hiring\b', re.IGNORECASE),              # 招聘（不是產業分析）
     re.compile(r'^Moving\s+to\b', re.IGNORECASE),         # 搬家/移居個人分享
+    re.compile(r'^Considering\s+Moving\b', re.IGNORECASE), # 考慮搬遷個人分享
     re.compile(r'^Dating\s+with\b', re.IGNORECASE),       # 約會徵文
     re.compile(r'^Check\s+your\b', re.IGNORECASE),        # 個人通知
     re.compile(r'^Tennis\b', re.IGNORECASE),              # 課程徵文
@@ -85,7 +87,28 @@ REDDIT_NOISE_PATTERNS = [
     re.compile(r'^When\s+is\s+it\b', re.IGNORECASE),      # 個人提問
     re.compile(r'^What\s+yall\b', re.IGNORECASE),         # 個人提問
     re.compile(r'^Is\s+there\b', re.IGNORECASE),          # 個人提問
+    re.compile(r'^Advice\s+on\b', re.IGNORECASE),         # 個人諮詢建議
+    re.compile(r'^\w+\s+for\s+\w+\?$', re.IGNORECASE),    # 短提問如 "Heels for Men?"
+    re.compile(r'^How\s+is\s+\w+\??$', re.IGNORECASE),    # 個人提問（How is X?）
+    re.compile(r'^Can\s+anyone\s+recommend\b', re.IGNORECASE),  # 個人推薦需求
+    re.compile(r'^Has\s+anyone\s+here\b', re.IGNORECASE), # 個人經驗提問
+    re.compile(r'^Making\s+friends\b', re.IGNORECASE),    # 交友徵文
+    re.compile(r'^Culture\s+Shock\b', re.IGNORECASE),     # 個人文化衝擊分享
+    re.compile(r'^Foreigners\s+who\s+visited\b', re.IGNORECASE), # 個人體驗分享
 ]
+
+
+def _clean_ptt_title(title: str) -> str:
+    """Strip PTT classification tags from title.
+
+    PTT hot page prepends tags like \\[新聞\\], \\[電競\\], \\[發錢\\], \\[推薦\\].
+    These are PTT's internal classification, not part of the real title.
+    """
+    # Remove escaped bracket tags at the start: \\[新聞\\], \\[電競\\], etc.
+    cleaned = re.sub(r'^\\?\\[[^\\]]+\\]\\s*', '', title)
+    # Also handle unescaped versions
+    cleaned = re.sub(r'^\[[^]]+\]\s*', '', cleaned)
+    return cleaned.strip()
 
 
 def _is_live_broadcast(title: str) -> bool:
@@ -203,6 +226,9 @@ def parse_ptt_from_markdown(text: str) -> list[dict]:
             if _is_excluded_board(board_name):
                 i += 1
                 continue
+
+            # Clean PTT classification tags from title
+            title = _clean_ptt_title(title)
 
             # Skip noise titles (announcements, mod posts, live broadcasts)
             if _is_noise_title(title) or _is_live_broadcast(title):
