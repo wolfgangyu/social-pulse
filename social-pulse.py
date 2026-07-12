@@ -30,7 +30,7 @@ VAULT_STAGING = Path("C:/Users/chimi/iCloudDrive/iCloud~md~obsidian/KM/50_Output
 if not VAULT_STAGING.exists():
     VAULT_STAGING = Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents/KM/50_Outputs/staging"
 
-FIRECRAWL_URL = "http://192.168.1.11:3002/v1/scrape"
+FIRECRAWL_URL = "http://100.102.220.1:3002/v1/scrape"
 FIRECRAWL_TIMEOUT = 25
 
 # ── Sources ───────────────────────────────────────────────────────────────────
