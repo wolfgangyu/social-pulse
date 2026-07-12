@@ -20,6 +20,7 @@ import requests
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Optional
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -44,6 +45,14 @@ REDDIT_BUSINESS_SUBREDDITS = [
 ]
 REDDIT_AI_QUERY = "AI agent Taiwan"
 REDDIT_AI_LIMIT = 8
+
+# AI HOT API configuration
+AIHOT_BASE = "https://aihot.virxact.com"
+AIHOT_UA = "social-pulse/1.0"
+AIHOT_FINGERPRINT_URL = f"{AIHOT_BASE}/api/public/fingerprint"
+AIHOT_ITEMS_URL = f"{AIHOT_BASE}/api/public/items"
+AIHOT_HOT_TOPICS_URL = f"{AIHOT_BASE}/api/public/hot-topics"
+AIHOT_TIMEOUT = 25
 
 # ── Filters ──────────────────────────────────────────────────────────────────
 # PTT boards to exclude (gossiping/moviemade/music are entertainment, not intel)
@@ -383,6 +392,154 @@ def fetch_reddit_ai_query(query: str, limit: int = 8) -> list[dict]:
     return items
 
 
+def fetch_aihot_fingerprint() -> Optional[str]:
+    """Fetch lightweight freshness fingerprint for cron monitoring.
+
+    Returns the fingerprint hash, or None on error.
+    """
+    try:
+        resp = requests.get(AIHOT_FINGERPRINT_URL, timeout=AIHOT_TIMEOUT)
+        if resp.status_code == 200:
+            return resp.text.strip()
+    except Exception:
+        pass
+    return None
+
+
+def fetch_aihot_selected(since_hours: int = 24, take: int = 50) -> list[dict]:
+    """Fetch AI HOT selected items from the past N hours.
+
+    Mirrors aihot's core approach: public API, no key needed,
+    curated/selected items with LLM-generated summaries and scores.
+    """
+    items = []
+    now = datetime.now(timezone.utc)
+    since_dt = now - timedelta(hours=since_hours)
+    since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    url = f"{AIHOT_ITEMS_URL}?mode=selected&since={since_iso}&take={take}"
+    headers = {"User-Agent": AIHOT_UA}
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=AIHOT_TIMEOUT)
+        if resp.status_code != 200:
+            return items
+        data = resp.json()
+        for item in data.get("items", []):
+            title = item.get("title", "")
+            if not title:
+                continue
+            # Skip noise titles
+            if _is_noise_title(title):
+                continue
+
+            permalink = item.get("permalink", "")
+            url_val = item.get("url", "")
+            source = item.get("source", "")
+            published_at = item.get("publishedAt", "")
+            summary = item.get("summary", "")
+            category = item.get("category", "")
+            score = item.get("score")
+
+            # Convert publishedAt to Taipei time string
+            time_str = ""
+            if published_at:
+                try:
+                    dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                    dt_taipei = dt.astimezone(timezone(timedelta(hours=8)))
+                    time_str = dt_taipei.strftime("%Y-%m-%d %H:%M 台北")
+                except Exception:
+                    time_str = published_at[:16]
+
+            # Category label mapping
+            cat_labels = {
+                "ai-models": "模型",
+                "ai-products": "產品",
+                "industry": "產業",
+                "paper": "論文",
+                "tip": "技巧",
+            }
+            cat_label = cat_labels.get(category, category or "")
+            meta_parts = []
+            if cat_label:
+                meta_parts.append(cat_label)
+            if score is not None:
+                meta_parts.append(f"score:{score}")
+            if source:
+                meta_parts.append(source)
+            meta = " · ".join(meta_parts)
+
+            # Use permalink (Chinese translated reading page) as primary URL
+            display_url = permalink or url_val
+
+            items.append({
+                "title": title,
+                "url": display_url,
+                "source": "aihot",
+                "meta": meta,
+                "summary": summary,
+                "category": category,
+                "score": score,
+            })
+    except Exception:
+        pass
+    return items
+
+
+def fetch_aihot_hot_topics(take: int = 10) -> list[dict]:
+    """Fetch current hot topics sorted by multi-source heat count.
+
+    Complements selected items — these are what's trending RIGHT NOW
+    across multiple independent sources, not just newest publications.
+    """
+    items = []
+    headers = {"User-Agent": AIHOT_UA}
+
+    try:
+        resp = requests.get(AIHOT_HOT_TOPICS_URL, headers=headers, timeout=AIHOT_TIMEOUT)
+        if resp.status_code != 200:
+            return items
+        data = resp.json()
+        for item in data.get("items", [])[:take]:
+            title = item.get("title", "")
+            if not title or _is_noise_title(title):
+                continue
+
+            permalink = item.get("permalink", "")
+            url_val = item.get("url", "")
+            source = item.get("source", "")
+            source_count = item.get("sourceCount", 0)
+            published_at = item.get("publishedAt", "")
+
+            # Convert time
+            time_str = ""
+            if published_at:
+                try:
+                    dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                    dt_taipei = dt.astimezone(timezone(timedelta(hours=8)))
+                    time_str = dt_taipei.strftime("%Y-%m-%d %H:%M 台北")
+                except Exception:
+                    time_str = published_at[:16]
+
+            meta = f"熱度:{source_count} 來源"
+            if source:
+                meta += f" · {source}"
+
+            display_url = permalink or url_val
+            items.append({
+                "title": title,
+                "url": display_url,
+                "source": "aihot_hot",
+                "meta": meta,
+                "summary": item.get("summary", ""),
+                "category": item.get("category", ""),
+                "score": item.get("score"),
+            })
+    except Exception:
+        pass
+    return items
+
+
 def fetch_web_trending(limit: int = 5) -> list[dict]:
     """Use firecrawl to scrape current trending topics via Google search.
 
@@ -494,11 +651,33 @@ def format_discord(items: list[dict], run_at: str) -> str:
     for sub in REDDIT_BUSINESS_SUBREDDITS:
         _render_business_reddit(lines, by_source, sub, "\U0001f4bc")
 
+    # AI HOT — hot topics first (trending now), then selected items
+    hot_entries = by_source.get("aihot_hot", [])
+    if hot_entries:
+        lines.append(f"\n\U0001f525 當前 AI 熱點（多源熱度）（{len(hot_entries)} 則）")
+        for idx, it in enumerate(hot_entries[:5], 1):
+            title = it["title"]
+            meta = it.get("meta", "")
+            lines.append(f"  {idx}. {title}")
+            lines.append(f"     {meta}  —  {it['url']}")
+
+    aihot_entries = by_source.get("aihot", [])
+    if aihot_entries:
+        lines.append(f"\n\U0001f916 AI HOT 精選（過去 24h）（{len(aihot_entries)} 則）")
+        for idx, it in enumerate(aihot_entries[:10], 1):
+            title = it["title"]
+            meta = it.get("meta", "")
+            summary = it.get("summary", "")
+            lines.append(f"  {idx}. {title}")
+            if summary and len(summary) > 5:
+                lines.append(f"     {summary[:80]}{'...' if len(summary) > 80 else ''}")
+            lines.append(f"     {meta}  —  {it['url']}")
+
     render_source("reddit_ai", "Reddit AI agent 搜尋", "\U0001f916")
     render_source("web", "Threads / FB 熱搜", "\U0001f310")
 
     lines.append("\n" + "─" * 36)
-    lines.append(f"共 {len(items)} 則情報  •  資料來源：PTT / Reddit / AI agent / 社群搜尋")
+    lines.append(f"共 {len(items)} 則情報  •  資料來源：PTT / Reddit / AI HOT / AI agent / 社群搜尋")
 
     return "\n".join(lines)
 
@@ -566,6 +745,30 @@ def run():
         if not dry:
             print(f"    [!] Reddit AI agent failed: {e}")
 
+    # AI HOT — curated AI news with LLM summaries and scores
+    if not dry:
+        print("[*] Fetching AI HOT selected...")
+    try:
+        aihot_items = fetch_aihot_selected(since_hours=24, take=50)
+        if not dry:
+            print(f"    -> {len(aihot_items)} AI HOT items")
+        all_items.extend(aihot_items)
+    except Exception as e:
+        if not dry:
+            print(f"    [!] AI HOT selected failed: {e}")
+
+    # AI HOT hot topics — multi-source trending right now
+    if not dry:
+        print("[*] Fetching AI HOT hot topics...")
+    try:
+        hot_items = fetch_aihot_hot_topics(take=10)
+        if not dry:
+            print(f"    -> {len(hot_items)} AI HOT hot topics")
+        all_items.extend(hot_items)
+    except Exception as e:
+        if not dry:
+            print(f"    [!] AI HOT hot topics failed: {e}")
+
     # Web trending (best-effort, often empty)
     if not dry:
         print("[*] Fetching web trending...")
@@ -592,6 +795,8 @@ def run():
             "ptt": [i for i in unique if i["source"] == "ptt"],
             "reddit": [i for i in unique if i["source"] == "reddit"],
             **{sub: [i for i in unique if i["meta"].startswith(f"r/{sub}")] for sub in REDDIT_BUSINESS_SUBREDDITS},
+            "aihot": [i for i in unique if i["source"] == "aihot"],
+            "aihot_hot": [i for i in unique if i["source"] == "aihot_hot"],
             "reddit_ai": [i for i in unique if i["source"] == "reddit_ai"],
             "web": [i for i in unique if i["source"] == "web"],
         },
