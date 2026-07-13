@@ -36,7 +36,6 @@ FIRECRAWL_TIMEOUT = 25
 
 # ── Sources ───────────────────────────────────────────────────────────────────
 PTT_URL = "https://www.pttweb.cc/hot/all/today"
-REDDIT_URL = "https://old.reddit.com/r/taiwan/hot/"
 REDDIT_BUSINESS_SUBREDDITS = [
     "Entrepreneur",
     "ecommerce",
@@ -645,7 +644,6 @@ def format_discord(items: list[dict], run_at: str) -> str:
                 lines.append(f"  {idx}. {title}  —  {it['url']}")
 
     render_source("ptt", "PTT 今日熱門（非八卦版）", "\U0001f4f6")
-    render_source("reddit", "Reddit r/taiwan", "\U0001f5c0")
 
     # Business subreddits
     for sub in REDDIT_BUSINESS_SUBREDDITS:
@@ -701,19 +699,6 @@ def run():
     except Exception as e:
         if not dry:
             print(f"    [!] PTT failed: {e}")
-
-    # Reddit r/taiwan
-    if not dry:
-        print("[*] Fetching Reddit r/taiwan...")
-    try:
-        text = fetch_firecrawl(REDDIT_URL)
-        reddit_items = parse_reddit_from_markdown(text)
-        if not dry:
-            print(f"    -> {len(reddit_items)} Reddit items (filtered)")
-        all_items.extend(reddit_items)
-    except Exception as e:
-        if not dry:
-            print(f"    [!] Reddit failed: {e}")
 
     # Reddit business subreddits (Entrepreneur, ecommerce, marketing, productivity)
     for sub in REDDIT_BUSINESS_SUBREDDITS:
@@ -793,7 +778,6 @@ def run():
         "run_at": run_at,
         "sources": {
             "ptt": [i for i in unique if i["source"] == "ptt"],
-            "reddit": [i for i in unique if i["source"] == "reddit"],
             **{sub: [i for i in unique if i["meta"].startswith(f"r/{sub}")] for sub in REDDIT_BUSINESS_SUBREDDITS},
             "aihot": [i for i in unique if i["source"] == "aihot"],
             "aihot_hot": [i for i in unique if i["source"] == "aihot_hot"],
