@@ -22,6 +22,28 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
+# ── Translation ───────────────────────────────────────────────────────────────
+try:
+    from opencc import OpenCC
+    _cc_t2s = OpenCC("s2t")  # Simplified → Traditional
+except ImportError:
+    _cc_t2s = None
+
+
+def translate_to_zh_tw(text: str) -> str:
+    """Convert Simplified Chinese to Traditional Chinese.
+
+    Falls back to identity (no-op) if opencc is not available.
+    Only translates strings; leaves URLs, numbers, and English text intact.
+    """
+    if not text or not _cc_t2s:
+        return text
+    try:
+        return _cc_t2s.convert(text)
+    except Exception:
+        return text
+
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).parent.resolve()
 OUTPUT_FILE = SCRIPT_DIR / "social-pulse.json"
@@ -606,10 +628,10 @@ def _render_business_reddit(lines, by_source, label, icon):
     entries = by_source.get(label, [])
     if not entries:
         return
-    lines.append(f"\n{icon} {label}（{len(entries)} 則）")
+    lines.append(f"\n{icon} {translate_to_zh_tw(label)}（{len(entries)} 則）")
     for idx, it in enumerate(entries[:8], 1):
-        title = it["title"]
-        meta = it.get("meta", "").strip()
+        title = translate_to_zh_tw(it["title"])
+        meta = translate_to_zh_tw(it.get("meta", "")).strip()
         if meta:
             lines.append(f"  {idx}. {title}  —  {meta}  —  {it['url']}")
         else:
@@ -631,10 +653,10 @@ def format_discord(items: list[dict], run_at: str) -> str:
         entries = by_source.get(name, [])
         if not entries:
             return
-        lines.append(f"\n{icon} {label}（{len(entries)} 則）")
+        lines.append(f"\n{icon} {translate_to_zh_tw(label)}（{len(entries)} 則）")
         for idx, it in enumerate(entries[:8], 1):
-            title = it["title"]
-            meta = it.get("meta", "").strip()
+            title = translate_to_zh_tw(it["title"])
+            meta = translate_to_zh_tw(it.get("meta", "")).strip()
             if meta:
                 lines.append(f"  {idx}. {title}  —  {meta}  —  {it['url']}")
             else:
@@ -651,8 +673,8 @@ def format_discord(items: list[dict], run_at: str) -> str:
     if hot_entries:
         lines.append(f"\n\U0001f525 當前 AI 熱點（多源熱度）（{len(hot_entries)} 則）")
         for idx, it in enumerate(hot_entries[:5], 1):
-            title = it["title"]
-            meta = it.get("meta", "")
+            title = translate_to_zh_tw(it["title"])
+            meta = translate_to_zh_tw(it.get("meta", ""))
             if meta:
                 lines.append(f"  {idx}. {title}  —  {meta}  —  {it['url']}")
             else:
@@ -662,9 +684,9 @@ def format_discord(items: list[dict], run_at: str) -> str:
     if aihot_entries:
         lines.append(f"\n\U0001f916 AI HOT 精選（過去 24h）（{len(aihot_entries)} 則）")
         for idx, it in enumerate(aihot_entries[:10], 1):
-            title = it["title"]
-            meta = it.get("meta", "")
-            summary = it.get("summary", "")
+            title = translate_to_zh_tw(it["title"])
+            meta = translate_to_zh_tw(it.get("meta", ""))
+            summary = translate_to_zh_tw(it.get("summary", ""))
             display_meta = meta
             if summary and len(summary) > 5:
                 display_meta = f"{summary[:80]}{'...' if len(summary) > 80 else ''}"
