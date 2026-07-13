@@ -52,7 +52,7 @@ fetch all sources → dedup → format discord (with translation) → output JSO
 
 ## 成功標準
 
-- [ ] r/taiwan 不再出現在報告中
-- [ ] Discord 輸出每項一行，排版一致
-- [ ] 繁體中文環境下顯示正體中文
-- [ ] JSON 輸出結構清晰，AI Agent 可讀取
+- [x] r/taiwan 不再出現在報告中
+- [x] Discord 輸出每項一行，排版一致
+- [x] 繁體中文環境下顯示正體中文
+- [x] JSON 輸出結構清晰，AI Agent 可讀取
