@@ -611,8 +611,7 @@ def _render_business_reddit(lines, by_source, label, icon):
         title = it["title"]
         meta = it.get("meta", "").strip()
         if meta:
-            lines.append(f"  {idx}. {title}")
-            lines.append(f"     {meta}  —  {it['url']}")
+            lines.append(f"  {idx}. {title}  —  {meta}  —  {it['url']}")
         else:
             lines.append(f"  {idx}. {title}  —  {it['url']}")
 
@@ -636,10 +635,8 @@ def format_discord(items: list[dict], run_at: str) -> str:
         for idx, it in enumerate(entries[:8], 1):
             title = it["title"]
             meta = it.get("meta", "").strip()
-            # Clean up empty meta parts
             if meta:
-                lines.append(f"  {idx}. {title}")
-                lines.append(f"     {meta}  —  {it['url']}")
+                lines.append(f"  {idx}. {title}  —  {meta}  —  {it['url']}")
             else:
                 lines.append(f"  {idx}. {title}  —  {it['url']}")
 
@@ -656,8 +653,10 @@ def format_discord(items: list[dict], run_at: str) -> str:
         for idx, it in enumerate(hot_entries[:5], 1):
             title = it["title"]
             meta = it.get("meta", "")
-            lines.append(f"  {idx}. {title}")
-            lines.append(f"     {meta}  —  {it['url']}")
+            if meta:
+                lines.append(f"  {idx}. {title}  —  {meta}  —  {it['url']}")
+            else:
+                lines.append(f"  {idx}. {title}  —  {it['url']}")
 
     aihot_entries = by_source.get("aihot", [])
     if aihot_entries:
@@ -666,10 +665,15 @@ def format_discord(items: list[dict], run_at: str) -> str:
             title = it["title"]
             meta = it.get("meta", "")
             summary = it.get("summary", "")
-            lines.append(f"  {idx}. {title}")
+            display_meta = meta
             if summary and len(summary) > 5:
-                lines.append(f"     {summary[:80]}{'...' if len(summary) > 80 else ''}")
-            lines.append(f"     {meta}  —  {it['url']}")
+                display_meta = f"{summary[:80]}{'...' if len(summary) > 80 else ''}"
+                if meta:
+                    display_meta += f" · {meta}"
+            if display_meta:
+                lines.append(f"  {idx}. {title}  —  {display_meta}  —  {it['url']}")
+            else:
+                lines.append(f"  {idx}. {title}  —  {it['url']}")
 
     render_source("reddit_ai", "Reddit AI agent 搜尋", "\U0001f916")
     render_source("web", "Threads / FB 熱搜", "\U0001f310")
